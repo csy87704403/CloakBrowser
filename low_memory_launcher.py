@@ -54,6 +54,17 @@ logger = logging.getLogger("cloak-launcher")
 XVFB_PROCESS = None
 
 
+def parse_resolution(resolution: str) -> tuple[int, int, int]:
+    """Parse WIDTHxHEIGHTxDEPTH into integers."""
+    try:
+        width_str, height_str, depth_str = resolution.split("x")
+        return int(width_str), int(height_str), int(depth_str)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid resolution '{resolution}'. Expected format WIDTHxHEIGHTxDEPTH."
+        ) from exc
+
+
 def start_xvfb(display: str = ":99", resolution: str = "1280x800x8") -> None:
     """启动 Xvfb 虚拟显示服务器。
 
@@ -69,7 +80,7 @@ def start_xvfb(display: str = ":99", resolution: str = "1280x800x8") -> None:
         os.remove(lock_file)
         logger.info("清理残留 Xvfb 锁文件: %s", lock_file)
 
-    width, height, depth = resolution.split("x")
+    parse_resolution(resolution)
 
     cmd = [
         "Xvfb",
@@ -143,17 +154,23 @@ def setup_resource_blocking(page, block_images: bool = True, block_fonts: bool =
 # 内存优化参数
 # ---------------------------------------------------------------------------
 
-def get_memory_saving_args() -> list[str]:
+def build_browser_profile_args(resolution: str) -> list[str]:
+    """Keep browser window size aligned with the spoofed screen size."""
+    width, height, _depth = parse_resolution(resolution)
+    return [
+        f"--window-size={width},{height}",
+        f"--fingerprint-screen-width={width}",
+        f"--fingerprint-screen-height={height}",
+    ]
+
+
+def get_memory_saving_args(aggressive: bool = False) -> list[str]:
     """返回省内存的 Chromium 启动参数。
 
     这些参数配合 CloakBrowser 自带的 stealth args 使用，
     不会覆盖指纹相关的参数（build_args 会做去重）。
     """
     return [
-        # GPU 相关 - 在 Xvfb 下不需要真实 GPU
-        "--disable-gpu",
-        "--disable-software-rasterizer",
-
         # 内存管理
         "--disable-dev-shm-usage",          # 避免 /dev/shm 空间不足
         "--js-flags=--max-old-space-size=512",  # 限制 V8 堆上限
@@ -168,7 +185,16 @@ def get_memory_saving_args() -> list[str]:
 
         # 渲染优化
         "--blink-settings=imagesEnabled=false",  # 二次保险：即使没拦截也尽量不加载图片
-    ]
+    ] + ([
+        # 极限省内存模式会牺牲 WebGL/渲染一致性，只适合已确认目标站不查这类信号时使用。
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+    ] if aggressive else [])
+
+
+def get_context_kwargs() -> dict:
+    """Use the real headed window size instead of Playwright's emulated viewport."""
+    return {"no_viewport": True}
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +207,8 @@ def launch_browser(
     locale: str | None = None,
     geoip: bool = False,
     humanize: bool = True,
+    resolution: str = "1280x800x8",
+    aggressive_memory: bool = False,
     extra_args: list[str] | None = None,
 ):
     """启动 CloakBrowser，返回 Browser 对象。
@@ -191,7 +219,8 @@ def launch_browser(
     # 延迟导入，确保可以设置 PYTHONPATH 后再导入
     from cloakbrowser import launch
 
-    all_args = get_memory_saving_args()
+    all_args = get_memory_saving_args(aggressive=aggressive_memory)
+    all_args.extend(build_browser_profile_args(resolution))
     if extra_args:
         all_args.extend(extra_args)
 
@@ -235,7 +264,7 @@ def visit_page(
 
     使用 context 模式：每个页面用独立 context，用完立即关闭，防止内存泄漏。
     """
-    context = browser.new_context()
+    context = browser.new_context(**get_context_kwargs())
     page = context.new_page()
 
     # 设置资源拦截
@@ -279,7 +308,7 @@ def visit_pages_batch(
     使用单 Browser + 多 Context 模式，每 N 个页面重建 context 防止内存累积。
     """
     results = []
-    context = browser.new_context()
+    context = browser.new_context(**get_context_kwargs())
     page_count = 0
 
     for url in urls:
@@ -309,7 +338,7 @@ def visit_pages_batch(
             # 定期重建 context，清理内存
             if page_count % context_recycle_interval == 0:
                 context.close()
-                context = browser.new_context()
+                context = browser.new_context(**get_context_kwargs())
                 logger.info("  Context 已重建（每 %d 页回收一次）", context_recycle_interval)
 
     context.close()
@@ -322,7 +351,7 @@ def visit_pages_batch(
 
 def verify_fingerprint(browser) -> None:
     """验证浏览器指纹是否伪装为 Windows。"""
-    context = browser.new_context()
+    context = browser.new_context(**get_context_kwargs())
     page = context.new_page()
 
     try:
@@ -395,6 +424,11 @@ def parse_args():
     # 行为
     parser.add_argument("--no-humanize", action="store_true", help="禁用人类化行为（省 CPU）")
     parser.add_argument("--verify", action="store_true", help="启动后验证指纹")
+    parser.add_argument(
+        "--aggressive-memory",
+        action="store_true",
+        help="进一步省内存，但会关闭 GPU/软件栅格化，可能降低反检测表现",
+    )
 
     # 内存管理
     parser.add_argument("--context-recycle", type=int, default=10, help="每 N 个页面重建 context (默认 10)")
@@ -444,6 +478,8 @@ def main():
             locale=args.locale,
             geoip=args.geoip,
             humanize=not args.no_humanize,
+            resolution=args.xvfb_resolution,
+            aggressive_memory=args.aggressive_memory,
         )
 
         # 3. 可选：验证指纹

@@ -27,6 +27,7 @@ services:
     # 环境变量
     environment:
       - DISPLAY=:99
+      - XVFB_WHD=1280x800x8
       - PROXY=${PROXY:-}
       - TZ=America/New_York
 
@@ -41,6 +42,7 @@ services:
     command: >
       python3 /app/low_memory_launcher.py
       --no-xvfb
+      --xvfb-resolution 1280x800x8
       --urls /app/urls.txt
       --proxy ${PROXY:-}
       --geoip
