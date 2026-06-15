@@ -36,6 +36,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -52,6 +53,98 @@ logger = logging.getLogger("cloak-launcher")
 # ---------------------------------------------------------------------------
 
 XVFB_PROCESS = None
+
+
+def _read_meminfo_kb() -> dict[str, int]:
+    """Read /proc/meminfo values in KB on Linux."""
+    info: dict[str, int] = {}
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as f:
+            for line in f:
+                key, value = line.split(":", 1)
+                info[key] = int(value.strip().split()[0])
+    except OSError:
+        pass
+    return info
+
+
+def _read_rss_kb(pid: int) -> int:
+    """Read resident memory for a pid from /proc/<pid>/status."""
+    try:
+        with open(f"/proc/{pid}/status", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1])
+    except OSError:
+        return 0
+    return 0
+
+
+def _read_child_pids(pid: int) -> list[int]:
+    """Read direct child PIDs from /proc."""
+    try:
+        with open(f"/proc/{pid}/task/{pid}/children", "r", encoding="utf-8") as f:
+            return [int(child) for child in f.read().split() if child.strip()]
+    except OSError:
+        return []
+
+
+def _read_process_tree_rss_kb(root_pid: int) -> int:
+    """Sum RSS for the current process tree."""
+    total_kb = 0
+    stack = [root_pid]
+    seen: set[int] = set()
+
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        total_kb += _read_rss_kb(pid)
+        stack.extend(_read_child_pids(pid))
+
+    return total_kb
+
+
+def _format_kb_as_mb(value_kb: int | None) -> str:
+    """Format KB values as rounded MB strings."""
+    if value_kb is None:
+        return "n/a"
+    return f"{value_kb / 1024:.0f}MB"
+
+
+def log_memory_snapshot(label: str) -> None:
+    """Log a point-in-time memory snapshot for the launcher process tree."""
+    meminfo = _read_meminfo_kb()
+    tree_rss_kb = _read_process_tree_rss_kb(os.getpid())
+    swap_total_kb = meminfo.get("SwapTotal")
+    swap_free_kb = meminfo.get("SwapFree")
+    swap_used_kb = None
+    if swap_total_kb is not None and swap_free_kb is not None:
+        swap_used_kb = max(swap_total_kb - swap_free_kb, 0)
+
+    logger.info(
+        "内存监控[%s] 进程树RSS=%s | 可用内存=%s | Swap已用=%s/%s",
+        label,
+        _format_kb_as_mb(tree_rss_kb),
+        _format_kb_as_mb(meminfo.get("MemAvailable")),
+        _format_kb_as_mb(swap_used_kb),
+        _format_kb_as_mb(swap_total_kb),
+    )
+
+
+def start_memory_logger(interval_seconds: float) -> tuple[threading.Event, threading.Thread]:
+    """Start a background logger that samples memory every N seconds."""
+    stop_event = threading.Event()
+
+    def _worker() -> None:
+        log_memory_snapshot("startup")
+        while not stop_event.wait(interval_seconds):
+            log_memory_snapshot("runtime")
+
+    thread = threading.Thread(target=_worker, name="memory-logger", daemon=True)
+    thread.start()
+    return stop_event, thread
 
 
 def parse_resolution(resolution: str) -> tuple[int, int, int]:
@@ -446,6 +539,8 @@ def parse_args():
     )
 
     # 内存管理
+    parser.add_argument("--no-memory-log", action="store_true", help="禁用运行时内存日志")
+    parser.add_argument("--memory-log-interval", type=float, default=5.0, help="运行时内存日志间隔秒数 (默认 5)")
     parser.add_argument("--context-recycle", type=int, default=10, help="每 N 个页面重建 context (默认 10)")
     parser.add_argument("--timeout", type=int, default=30000, help="页面加载超时 (毫秒，默认 30000)")
 
@@ -454,6 +549,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    memory_log_stop_event = None
 
     # 收集要访问的 URL
     urls = []
@@ -470,6 +566,8 @@ def main():
     # 注册信号处理，确保退出时清理
     def cleanup(signum=None, frame=None):
         logger.info("正在清理...")
+        if memory_log_stop_event:
+            memory_log_stop_event.set()
         stop_xvfb()
         sys.exit(0)
 
@@ -485,6 +583,9 @@ def main():
                 logger.error("--no-xvfb 但未设置 DISPLAY 环境变量")
                 sys.exit(1)
             logger.info("使用已有 DISPLAY=%s", os.environ["DISPLAY"])
+
+        if not args.no_memory_log:
+            memory_log_stop_event, _memory_log_thread = start_memory_logger(args.memory_log_interval)
 
         # 2. 启动 CloakBrowser
         browser = launch_browser(
@@ -512,6 +613,7 @@ def main():
                 timeout=args.timeout,
             )
             logger.info("结果: %s", result)
+            log_memory_snapshot("after-page")
         else:
             results = visit_pages_batch(
                 browser,
@@ -523,16 +625,20 @@ def main():
                 timeout=args.timeout,
             )
             logger.info("完成 %d/%d 个页面", sum(1 for r in results if r["status"] == "ok"), len(results))
+            log_memory_snapshot("after-batch")
 
         # 5. 关闭浏览器
         browser.close()
         logger.info("浏览器已关闭")
+        log_memory_snapshot("after-browser-close")
 
     except Exception as e:
         logger.error("运行出错: %s", e, exc_info=True)
         sys.exit(1)
 
     finally:
+        if memory_log_stop_event:
+            memory_log_stop_event.set()
         stop_xvfb()
 
 
