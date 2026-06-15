@@ -72,12 +72,31 @@ PY
 detect_public_ip() {
     local ip=""
     if require_command curl; then
+        ip="$(curl -fsS --max-time 3 \
+            -H "Metadata-Flavor: Google" \
+            "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip" \
+            2>/dev/null || true)"
+    fi
+    if [ -z "$ip" ] && require_command curl; then
         ip="$(curl -fsS --max-time 3 https://api.ipify.org 2>/dev/null || true)"
     fi
     if [ -z "$ip" ]; then
         ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
     fi
     echo "${ip:-YOUR_VPS_PUBLIC_IP}"
+}
+
+is_private_ip() {
+    python3 - "$1" <<'PY'
+import ipaddress
+import sys
+
+try:
+    ip = ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    sys.exit(1)
+sys.exit(0 if ip.is_private else 1)
+PY
 }
 
 can_connect_x_socket() {
@@ -132,6 +151,12 @@ start_x11vnc() {
     X11VNC_PID="$!"
     echo "$X11VNC_PID" > "$OUTPUT_DIR/x11vnc.pid"
     sleep 1
+
+    if ! kill -0 "$X11VNC_PID" >/dev/null 2>&1; then
+        echo "[ERROR] x11vnc exited early. Log: $OUTPUT_DIR/x11vnc.log" >&2
+        tail -n 60 "$OUTPUT_DIR/x11vnc.log" >&2 || true
+        exit 1
+    fi
 }
 
 start_novnc() {
@@ -153,6 +178,40 @@ start_novnc() {
     WEBSOCKIFY_PID="$!"
     echo "$WEBSOCKIFY_PID" > "$OUTPUT_DIR/novnc.pid"
     sleep 1
+
+    if ! kill -0 "$WEBSOCKIFY_PID" >/dev/null 2>&1; then
+        echo "[ERROR] noVNC/websockify exited early. Log: $OUTPUT_DIR/novnc.log" >&2
+        tail -n 60 "$OUTPUT_DIR/novnc.log" >&2 || true
+        exit 1
+    fi
+}
+
+wait_for_novnc() {
+    local i
+
+    for i in $(seq 1 20); do
+        if python3 - "$NOVNC_PORT" <<'PY'
+import http.client
+import sys
+
+port = int(sys.argv[1])
+try:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
+    conn.request("GET", "/vnc.html")
+    response = conn.getresponse()
+except OSError:
+    sys.exit(1)
+sys.exit(0 if response.status < 500 else 1)
+PY
+        then
+            return
+        fi
+        sleep 0.5
+    done
+
+    echo "[ERROR] noVNC did not respond on local port $NOVNC_PORT. Log: $OUTPUT_DIR/novnc.log" >&2
+    tail -n 60 "$OUTPUT_DIR/novnc.log" >&2 || true
+    exit 1
 }
 
 cleanup() {
@@ -170,6 +229,7 @@ ensure_vnc_password
 start_xvfb_if_needed
 start_x11vnc
 start_novnc
+wait_for_novnc
 
 export DISPLAY="$DISPLAY_NUM"
 export PYTHONPATH="$SCRIPT_DIR:${PYTHONPATH:-}"
@@ -181,6 +241,10 @@ PUBLIC_URL="http://${PUBLIC_IP}:${NOVNC_PORT}/vnc.html?autoconnect=true&resize=s
 echo "[INFO] noVNC is ready."
 echo "[INFO] Public URL: $PUBLIC_URL"
 echo "[INFO] VNC password: $VNC_PASSWORD"
+if is_private_ip "$PUBLIC_IP"; then
+    echo "[WARN] Detected IP $PUBLIC_IP is private/internal. Use the VM external IP from Google Cloud Console instead."
+fi
+echo "[WARN] Google Cloud firewall must allow inbound TCP $NOVNC_PORT, otherwise the public URL will not connect."
 echo "[WARN] Keep port $NOVNC_PORT open only while testing. Stop this script with Ctrl+C when done."
 echo "[INFO] Launching CloakBrowser at: $URL"
 
