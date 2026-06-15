@@ -384,6 +384,7 @@ class ChromePool:
 
             # Wait for CDP to be ready
             if not await self._wait_for_cdp(port):
+                logger.error("Chrome CDP did not become ready on port %d within timeout", port)
                 process.kill()
                 await asyncio.to_thread(process.wait, timeout=5)
                 await asyncio.to_thread(self._safe_rmtree, user_data_dir)
@@ -441,8 +442,10 @@ class ChromePool:
         logger.info("All Chrome processes terminated")
 
     @staticmethod
-    async def _wait_for_cdp(port: int, timeout: float = 10.0) -> bool:
+    async def _wait_for_cdp(port: int, timeout: float | None = None) -> bool:
         """Poll Chrome's /json/version until ready."""
+        if timeout is None:
+            timeout = float(os.environ.get("CLOAKSERVE_CDP_TIMEOUT", "10"))
         deadline = time.monotonic() + timeout
         delay = 0.1
         session = aiohttp.ClientSession(

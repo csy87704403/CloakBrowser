@@ -11,6 +11,7 @@ XVFB_WHD="${XVFB_WHD:-1280x800x24}"
 CDP_PORT="${CDP_PORT:-9222}"
 PROFILE_DIR="${PROFILE_DIR:-$OUTPUT_DIR/hermes-profile}"
 IDLE_TIMEOUT="${IDLE_TIMEOUT:-0}"
+CDP_READY_TIMEOUT="${CDP_READY_TIMEOUT:-45}"
 FINGERPRINT_SEED="${FINGERPRINT_SEED:-424242}"
 TIMEZONE_ID="${TIMEZONE_ID:-America/New_York}"
 LOCALE_ID="${LOCALE_ID:-en-US}"
@@ -69,8 +70,10 @@ start_xvfb_if_needed
 export DISPLAY="$DISPLAY_NUM"
 export PYTHONPATH="$SCRIPT_DIR:${PYTHONPATH:-}"
 export CLOAKBROWSER_AUTO_UPDATE="${CLOAKBROWSER_AUTO_UPDATE:-false}"
+export CLOAKSERVE_CDP_TIMEOUT="$CDP_READY_TIMEOUT"
 
 echo "[INFO] Starting CloakBrowser CDP endpoint on http://127.0.0.1:$CDP_PORT"
+echo "[INFO] Chrome CDP ready timeout: ${CDP_READY_TIMEOUT}s"
 echo "[INFO] Hermes should connect with: playwright.chromium.connect_over_cdp(\"http://127.0.0.1:$CDP_PORT?fingerprint=$FINGERPRINT_SEED\")"
 
 exec python3 "$SCRIPT_DIR/bin/cloakserve" \
