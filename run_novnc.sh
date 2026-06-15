@@ -7,10 +7,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="$SCRIPT_DIR/output"
 
 DISPLAY_NUM="${DISPLAY:-:99}"
-XVFB_WHD="${XVFB_WHD:-1280x800x24}"
+XVFB_WHD="${XVFB_WHD:-960x640x16}"
 VNC_PORT="${VNC_PORT:-5900}"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
 NOVNC_LISTEN="${NOVNC_LISTEN:-0.0.0.0}"
+NOVNC_QUALITY="${NOVNC_QUALITY:-2}"
+NOVNC_COMPRESSION="${NOVNC_COMPRESSION:-9}"
+X11VNC_WAIT_MS="${X11VNC_WAIT_MS:-50}"
+X11VNC_DEFER_MS="${X11VNC_DEFER_MS:-20}"
+X11VNC_NCACHE="${X11VNC_NCACHE:-0}"
 URL="${1:-https://example.com}"
 PROFILE_DIR="${PROFILE_DIR:-$OUTPUT_DIR/novnc-profile}"
 FINGERPRINT_SEED="${FINGERPRINT_SEED:-424242}"
@@ -18,6 +23,9 @@ TIMEZONE_ID="${TIMEZONE_ID:-America/New_York}"
 LOCALE_ID="${LOCALE_ID:-en-US}"
 VNC_PASSWORD="${VNC_PASSWORD:-}"
 VNC_PASS_FILE="$OUTPUT_DIR/novnc-vnc.pass"
+SCREEN_WIDTH="${XVFB_WHD%%x*}"
+SCREEN_HEIGHT_WITH_DEPTH="${XVFB_WHD#*x}"
+SCREEN_HEIGHT="${SCREEN_HEIGHT_WITH_DEPTH%%x*}"
 
 XVFB_PID=""
 X11VNC_PID=""
@@ -120,6 +128,7 @@ PY
 start_xvfb_if_needed() {
     if can_connect_x_socket; then
         echo "[INFO] Reusing existing Xvfb DISPLAY=$DISPLAY_NUM"
+        echo "[WARN] Existing Xvfb resolution is kept. Stop the old session first if you want XVFB_WHD=$XVFB_WHD to take effect."
         return
     fi
 
@@ -138,6 +147,11 @@ start_xvfb_if_needed() {
 }
 
 start_x11vnc() {
+    local cache_args=()
+    if [ "$X11VNC_NCACHE" != "0" ]; then
+        cache_args=("-ncache" "$X11VNC_NCACHE" "-ncache_cr")
+    fi
+
     echo "[INFO] Starting x11vnc on 127.0.0.1:$VNC_PORT"
     x11vnc \
         -display "$DISPLAY_NUM" \
@@ -145,8 +159,13 @@ start_x11vnc() {
         -rfbauth "$VNC_PASS_FILE" \
         -forever \
         -shared \
+        -noxdamage \
+        -threads \
+        -wait "$X11VNC_WAIT_MS" \
+        -defer "$X11VNC_DEFER_MS" \
         -rfbport "$VNC_PORT" \
         -o "$OUTPUT_DIR/x11vnc.log" \
+        "${cache_args[@]}" \
         >/dev/null 2>&1 &
     X11VNC_PID="$!"
     echo "$X11VNC_PID" > "$OUTPUT_DIR/x11vnc.pid"
@@ -236,11 +255,12 @@ export PYTHONPATH="$SCRIPT_DIR:${PYTHONPATH:-}"
 export CLOAKBROWSER_AUTO_UPDATE="${CLOAKBROWSER_AUTO_UPDATE:-false}"
 
 PUBLIC_IP="$(detect_public_ip)"
-PUBLIC_URL="http://${PUBLIC_IP}:${NOVNC_PORT}/vnc.html?autoconnect=true&resize=scale"
+PUBLIC_URL="http://${PUBLIC_IP}:${NOVNC_PORT}/vnc.html?autoconnect=true&resize=scale&quality=${NOVNC_QUALITY}&compression=${NOVNC_COMPRESSION}"
 
 echo "[INFO] noVNC is ready."
 echo "[INFO] Public URL: $PUBLIC_URL"
 echo "[INFO] VNC password: $VNC_PASSWORD"
+echo "[INFO] Low-bandwidth defaults: Xvfb=$XVFB_WHD, noVNC quality=$NOVNC_QUALITY, compression=$NOVNC_COMPRESSION"
 if is_private_ip "$PUBLIC_IP"; then
     echo "[WARN] Detected IP $PUBLIC_IP is private/internal. Use the VM external IP from Google Cloud Console instead."
 fi
@@ -248,13 +268,13 @@ echo "[WARN] Google Cloud firewall must allow inbound TCP $NOVNC_PORT, otherwise
 echo "[WARN] Keep port $NOVNC_PORT open only while testing. Stop this script with Ctrl+C when done."
 echo "[INFO] Launching CloakBrowser at: $URL"
 
-python3 - "$URL" "$PROFILE_DIR" "$FINGERPRINT_SEED" "$TIMEZONE_ID" "$LOCALE_ID" <<'PY'
+python3 - "$URL" "$PROFILE_DIR" "$FINGERPRINT_SEED" "$TIMEZONE_ID" "$LOCALE_ID" "$SCREEN_WIDTH" "$SCREEN_HEIGHT" <<'PY'
 import sys
 import time
 
 from cloakbrowser import launch_persistent_context
 
-url, profile_dir, seed, timezone_id, locale_id = sys.argv[1:]
+url, profile_dir, seed, timezone_id, locale_id, screen_width, screen_height = sys.argv[1:]
 
 ctx = launch_persistent_context(
     profile_dir,
@@ -267,9 +287,9 @@ ctx = launch_persistent_context(
         f"--fingerprint={seed}",
         "--disable-dev-shm-usage",
         "--no-zygote",
-        "--window-size=1280,800",
-        "--fingerprint-screen-width=1280",
-        "--fingerprint-screen-height=800",
+        f"--window-size={screen_width},{screen_height}",
+        f"--fingerprint-screen-width={screen_width}",
+        f"--fingerprint-screen-height={screen_height}",
         "--js-flags=--max-old-space-size=512",
     ],
 )
