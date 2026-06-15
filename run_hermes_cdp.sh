@@ -17,6 +17,15 @@ LOCALE_ID="${LOCALE_ID:-en-US}"
 
 mkdir -p "$OUTPUT_DIR" "$PROFILE_DIR"
 
+ensure_serve_deps() {
+    if python3 -c "import aiohttp, websockets" >/dev/null 2>&1; then
+        return
+    fi
+
+    echo "[INFO] Installing CloakBrowser CDP server dependencies..."
+    python3 -m pip install "aiohttp>=3.9" "websockets>=12.0"
+}
+
 can_connect_x_socket() {
     local socket_path="/tmp/.X11-unix/X${DISPLAY_NUM#:}"
     python3 - "$socket_path" <<'PY'
@@ -54,6 +63,7 @@ start_xvfb_if_needed() {
     fi
 }
 
+ensure_serve_deps
 start_xvfb_if_needed
 
 export DISPLAY="$DISPLAY_NUM"
