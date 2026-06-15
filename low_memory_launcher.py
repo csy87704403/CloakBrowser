@@ -53,6 +53,11 @@ logger = logging.getLogger("cloak-launcher")
 # ---------------------------------------------------------------------------
 
 XVFB_PROCESS = None
+MEMORY_STATS = {
+    "peak_tree_rss_kb": 0,
+    "peak_swap_used_kb": 0,
+    "min_mem_available_kb": None,
+}
 
 
 def _read_meminfo_kb() -> dict[str, int]:
@@ -119,17 +124,36 @@ def log_memory_snapshot(label: str) -> None:
     tree_rss_kb = _read_process_tree_rss_kb(os.getpid())
     swap_total_kb = meminfo.get("SwapTotal")
     swap_free_kb = meminfo.get("SwapFree")
+    mem_available_kb = meminfo.get("MemAvailable")
     swap_used_kb = None
     if swap_total_kb is not None and swap_free_kb is not None:
         swap_used_kb = max(swap_total_kb - swap_free_kb, 0)
+
+    MEMORY_STATS["peak_tree_rss_kb"] = max(MEMORY_STATS["peak_tree_rss_kb"], tree_rss_kb)
+    if swap_used_kb is not None:
+        MEMORY_STATS["peak_swap_used_kb"] = max(MEMORY_STATS["peak_swap_used_kb"], swap_used_kb)
+    if mem_available_kb is not None:
+        current_min = MEMORY_STATS["min_mem_available_kb"]
+        if current_min is None or mem_available_kb < current_min:
+            MEMORY_STATS["min_mem_available_kb"] = mem_available_kb
 
     logger.info(
         "内存监控[%s] 进程树RSS=%s | 可用内存=%s | Swap已用=%s/%s",
         label,
         _format_kb_as_mb(tree_rss_kb),
-        _format_kb_as_mb(meminfo.get("MemAvailable")),
+        _format_kb_as_mb(mem_available_kb),
         _format_kb_as_mb(swap_used_kb),
         _format_kb_as_mb(swap_total_kb),
+    )
+
+
+def log_memory_summary() -> None:
+    """Log peak / low-water memory summary for the current run."""
+    logger.info(
+        "内存总结 峰值RSS=%s | 最低可用内存=%s | 峰值Swap已用=%s",
+        _format_kb_as_mb(MEMORY_STATS["peak_tree_rss_kb"]),
+        _format_kb_as_mb(MEMORY_STATS["min_mem_available_kb"]),
+        _format_kb_as_mb(MEMORY_STATS["peak_swap_used_kb"]),
     )
 
 
@@ -455,6 +479,7 @@ def verify_fingerprint(browser) -> None:
             return {
                 platform: navigator.platform,
                 userAgent: navigator.userAgent.substring(0, 80) + '...',
+                secureContext: window.isSecureContext,
                 webdriver: navigator.webdriver,
                 screen: `${screen.width}x${screen.height}`,
                 viewport: `${window.innerWidth}x${window.innerHeight}`,
@@ -464,17 +489,21 @@ def verify_fingerprint(browser) -> None:
                 gpu: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'N/A',
                 gpuVendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : 'N/A',
                 cores: navigator.hardwareConcurrency,
-                memory: navigator.deviceMemory,
+                memory: typeof navigator.deviceMemory === 'number' ? navigator.deviceMemory : null,
             };
         }""")
 
         logger.info("=== 指纹验证 ===")
         logger.info("  Platform: %s", info["platform"])
         logger.info("  UA: %s", info["userAgent"])
+        logger.info("  SecureContext: %s", info["secureContext"])
         logger.info("  WebDriver: %s", info["webdriver"])
         logger.info("  Screen: %s | Viewport: %s | DPR: %s", info["screen"], info["viewport"], info["dpr"])
         logger.info("  GPU: %s — %s", info["gpuVendor"], info["gpu"])
-        logger.info("  Cores: %s | Memory: %s GB", info["cores"], info["memory"])
+        if info["memory"] is None:
+            logger.info("  Cores: %s | Memory: unavailable", info["cores"])
+        else:
+            logger.info("  Cores: %s | Memory: %s GB", info["cores"], info["memory"])
 
         if info["platform"] == "Win32":
             logger.info("  Windows 指纹伪装: 成功")
@@ -487,6 +516,8 @@ def verify_fingerprint(browser) -> None:
             logger.warning("  WebGL 不可用：通常是 Xvfb 色深过低或 GPU/软件栅格化被禁用")
         elif not info["debugExtension"]:
             logger.warning("  WebGL 可用，但拿不到调试扩展，部分站点可能只看到有限 GPU 信息")
+        if not info["secureContext"] and info["memory"] is None:
+            logger.info("  deviceMemory 在非安全上下文中可能不可用，这不代表目标站点上的 HTTPS 页面也会缺失")
 
     except Exception as e:
         logger.error("指纹验证失败: %s", e)
@@ -631,6 +662,7 @@ def main():
         browser.close()
         logger.info("浏览器已关闭")
         log_memory_snapshot("after-browser-close")
+        log_memory_summary()
 
     except Exception as e:
         logger.error("运行出错: %s", e, exc_info=True)
