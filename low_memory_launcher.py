@@ -47,6 +47,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("cloak-launcher")
 
+# Default to fast startup on VPS runs. Manual updates can still be triggered
+# by explicitly exporting CLOAKBROWSER_AUTO_UPDATE=true before launch.
+os.environ.setdefault("CLOAKBROWSER_AUTO_UPDATE", "false")
+
 
 # ---------------------------------------------------------------------------
 # Xvfb 管理
