@@ -1,0 +1,15 @@
+# URL 列表示例
+# 每行一个 URL，# 开头的行为注释
+# 用法: python low_memory_launcher.py --urls urls.txt
+
+# 基础测试
+https://example.com
+https://httpbin.org/headers
+
+# 指纹检测
+# https://bot.sannysoft.com
+# https://browserleaks.com/javascript
+# https://amiunique.org
+
+# 实际业务（替换为你的目标）
+# https://your-target-site.com

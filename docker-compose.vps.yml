@@ -1,0 +1,52 @@
+# CloakBrowser Linux VPS 低内存 Docker Compose 配置
+#
+# 用法：
+#   docker compose up -d          # 后台启动
+#   docker compose logs -f        # 查看日志
+#   docker compose down           # 停止
+#
+# 自定义：
+#   PROXY=http://user:pass@host:port docker compose up -d
+
+services:
+  cloakbrowser:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cloakbrowser-vps
+    restart: unless-stopped
+
+    # 内存限制（防止 OOM 影响宿主机）
+    mem_limit: 1g
+    memswap_limit: 2g
+
+    # 端口（可选：用于远程调试）
+    # ports:
+    #   - "9222:9222"
+
+    # 环境变量
+    environment:
+      - DISPLAY=:99
+      - PROXY=${PROXY:-}
+      - TZ=America/New_York
+
+    # 挂载卷
+    volumes:
+      # 持久化浏览器缓存（避免每次重新下载二进制）
+      - cloakbrowser-cache:/root/.cloakbrowser
+      # 挂载 URL 列表
+      - ./urls.txt:/app/urls.txt:ro
+
+    # 启动命令
+    command: >
+      python3 /app/low_memory_launcher.py
+      --no-xvfb
+      --urls /app/urls.txt
+      --proxy ${PROXY:-}
+      --geoip
+      --verify
+      --timezone America/New_York
+      --locale en-US
+
+volumes:
+  cloakbrowser-cache:
