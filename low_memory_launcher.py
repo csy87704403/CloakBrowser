@@ -34,6 +34,7 @@ import argparse
 import logging
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -186,6 +187,21 @@ def parse_resolution(resolution: str) -> tuple[int, int, int]:
         ) from exc
 
 
+def _can_connect_x_socket(socket_path: str) -> bool:
+    """Return True when an existing X11 unix socket is alive."""
+    if not os.path.exists(socket_path):
+        return False
+
+    try:
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(0.5)
+        client.connect(socket_path)
+        client.close()
+        return True
+    except OSError:
+        return False
+
+
 def start_xvfb(display: str = ":99", resolution: str = "1280x800x24") -> None:
     """启动 Xvfb 虚拟显示服务器。
 
@@ -193,13 +209,22 @@ def start_xvfb(display: str = ":99", resolution: str = "1280x800x24") -> None:
     """
     global XVFB_PROCESS
 
-    # 清理残留锁文件
     display_num = display.replace(":", "")
     lock_file = f"/tmp/.X{display_num}-lock"
-    socket_dir = f"/tmp/.X11-unix"
-    if os.path.exists(lock_file):
-        os.remove(lock_file)
-        logger.info("清理残留 Xvfb 锁文件: %s", lock_file)
+    socket_path = f"/tmp/.X11-unix/X{display_num}"
+
+    if _can_connect_x_socket(socket_path):
+        os.environ["DISPLAY"] = display
+        logger.info("复用已有 Xvfb DISPLAY=%s (%s)", display, socket_path)
+        return
+
+    for stale_path in (lock_file, socket_path):
+        if os.path.exists(stale_path):
+            try:
+                os.remove(stale_path)
+                logger.info("清理残留 Xvfb 文件: %s", stale_path)
+            except OSError as e:
+                logger.warning("清理残留 Xvfb 文件失败: %s (%s)", stale_path, e)
 
     parse_resolution(resolution)
 
@@ -214,14 +239,20 @@ def start_xvfb(display: str = ":99", resolution: str = "1280x800x24") -> None:
     logger.info("启动 Xvfb: %s (分辨率 %s)", display, resolution)
     XVFB_PROCESS = subprocess.Popen(
         cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
 
     # 等待 Xvfb 就绪
     time.sleep(1)
     if XVFB_PROCESS.poll() is not None:
         logger.error("Xvfb 启动失败，退出码: %d", XVFB_PROCESS.returncode)
+        stdout, stderr = XVFB_PROCESS.communicate(timeout=1)
+        if stdout.strip():
+            logger.error("Xvfb stdout: %s", stdout.strip())
+        if stderr.strip():
+            logger.error("Xvfb stderr: %s", stderr.strip())
         sys.exit(1)
 
     os.environ["DISPLAY"] = display
