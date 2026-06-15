@@ -25,7 +25,7 @@
   python low_memory_launcher.py --no-block-images --url https://example.com
 
   # 自定义 Xvfb 分辨率
-  python low_memory_launcher.py --xvfb-resolution 1280x720x8 --url https://example.com
+  python low_memory_launcher.py --xvfb-resolution 1280x720x24 --url https://example.com
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ def parse_resolution(resolution: str) -> tuple[int, int, int]:
         ) from exc
 
 
-def start_xvfb(display: str = ":99", resolution: str = "1280x800x8") -> None:
+def start_xvfb(display: str = ":99", resolution: str = "1280x800x24") -> None:
     """启动 Xvfb 虚拟显示服务器。
 
     默认 1280x800x8（8 位色深），比 Docker 默认的 1920x1080x24 省约 60% 显存。
@@ -207,7 +207,7 @@ def launch_browser(
     locale: str | None = None,
     geoip: bool = False,
     humanize: bool = True,
-    resolution: str = "1280x800x8",
+    resolution: str = "1280x800x24",
     aggressive_memory: bool = False,
     extra_args: list[str] | None = None,
 ):
@@ -355,13 +355,19 @@ def verify_fingerprint(browser) -> None:
     page = context.new_page()
 
     try:
-        page.goto("https://httpbin.org/headers", timeout=15000)
+        page.goto("data:text/html,<title>fingerprint-check</title>", timeout=15000)
         info = page.evaluate("""() => {
             const gl = document.createElement('canvas').getContext('webgl');
             const dbg = gl ? gl.getExtension('WEBGL_debug_renderer_info') : null;
             return {
                 platform: navigator.platform,
                 userAgent: navigator.userAgent.substring(0, 80) + '...',
+                webdriver: navigator.webdriver,
+                screen: `${screen.width}x${screen.height}`,
+                viewport: `${window.innerWidth}x${window.innerHeight}`,
+                dpr: window.devicePixelRatio,
+                webglAvailable: !!gl,
+                debugExtension: !!dbg,
                 gpu: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'N/A',
                 gpuVendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : 'N/A',
                 cores: navigator.hardwareConcurrency,
@@ -372,6 +378,8 @@ def verify_fingerprint(browser) -> None:
         logger.info("=== 指纹验证 ===")
         logger.info("  Platform: %s", info["platform"])
         logger.info("  UA: %s", info["userAgent"])
+        logger.info("  WebDriver: %s", info["webdriver"])
+        logger.info("  Screen: %s | Viewport: %s | DPR: %s", info["screen"], info["viewport"], info["dpr"])
         logger.info("  GPU: %s — %s", info["gpuVendor"], info["gpu"])
         logger.info("  Cores: %s | Memory: %s GB", info["cores"], info["memory"])
 
@@ -379,6 +387,13 @@ def verify_fingerprint(browser) -> None:
             logger.info("  Windows 指纹伪装: 成功")
         else:
             logger.warning("  Windows 指纹伪装: 失败 (platform=%s)", info["platform"])
+
+        if info["webdriver"] is not False:
+            logger.warning("  WebDriver 信号异常: %s", info["webdriver"])
+        if not info["webglAvailable"]:
+            logger.warning("  WebGL 不可用：通常是 Xvfb 色深过低或 GPU/软件栅格化被禁用")
+        elif not info["debugExtension"]:
+            logger.warning("  WebGL 可用，但拿不到调试扩展，部分站点可能只看到有限 GPU 信息")
 
     except Exception as e:
         logger.error("指纹验证失败: %s", e)
@@ -413,7 +428,7 @@ def parse_args():
 
     # Xvfb
     parser.add_argument("--xvfb-display", default=":99", help="Xvfb 显示号 (默认 :99)")
-    parser.add_argument("--xvfb-resolution", default="1280x800x8", help="Xvfb 分辨率 (默认 1280x800x8)")
+    parser.add_argument("--xvfb-resolution", default="1280x800x24", help="Xvfb 分辨率 (默认 1280x800x24)")
     parser.add_argument("--no-xvfb", action="store_true", help="不启动 Xvfb（已有 DISPLAY 环境变量时使用）")
 
     # 资源拦截

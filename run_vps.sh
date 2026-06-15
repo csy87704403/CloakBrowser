@@ -154,6 +154,7 @@ main() {
     check_python_deps
 
     export PYTHONPATH="$SCRIPT_DIR:${PYTHONPATH:-}"
+    export CLOAKBROWSER_AUTO_UPDATE="${CLOAKBROWSER_AUTO_UPDATE:-false}"
 
     info "Starting low_memory_launcher.py..."
     echo ""
