@@ -411,6 +411,7 @@ def visit_page(
     block_fonts: bool = True,
     block_media: bool = True,
     timeout: int = 30000,
+    wait_until: str = "commit",
 ) -> dict:
     """访问单个页面，返回提取的信息。
 
@@ -424,7 +425,23 @@ def visit_page(
 
     try:
         logger.info("访问: %s", url)
-        page.goto(url, timeout=timeout, wait_until="domcontentloaded")
+        try:
+            page.goto(url, timeout=timeout, wait_until=wait_until)
+        except Exception as e:
+            current_url = page.url
+            current_title = ""
+            try:
+                current_title = page.title()
+            except Exception:
+                pass
+            if current_url and current_url != "about:blank":
+                logger.warning("  导航未完全满足 wait_until=%s，但页面已有响应: %s", wait_until, current_url)
+                return {
+                    "url": current_url,
+                    "title": current_title,
+                    "status": f"partial: {e}",
+                }
+            raise
 
         # 提取基本信息
         result = {
@@ -454,6 +471,7 @@ def visit_pages_batch(
     block_media: bool = True,
     context_recycle_interval: int = 10,
     timeout: int = 30000,
+    wait_until: str = "commit",
 ) -> list[dict]:
     """批量访问多个 URL。
 
@@ -469,7 +487,24 @@ def visit_pages_batch(
 
         try:
             logger.info("[%d/%d] 访问: %s", page_count + 1, len(urls), url)
-            page.goto(url, timeout=timeout, wait_until="domcontentloaded")
+            try:
+                page.goto(url, timeout=timeout, wait_until=wait_until)
+            except Exception as e:
+                current_url = page.url
+                current_title = ""
+                try:
+                    current_title = page.title()
+                except Exception:
+                    pass
+                if current_url and current_url != "about:blank":
+                    logger.warning("  导航未完全满足 wait_until=%s，但页面已有响应: %s", wait_until, current_url)
+                    results.append({
+                        "url": current_url,
+                        "title": current_title,
+                        "status": f"partial: {e}",
+                    })
+                    continue
+                raise
 
             result = {
                 "url": page.url,
@@ -608,7 +643,13 @@ def parse_args():
     parser.add_argument("--no-memory-log", action="store_true", help="禁用运行时内存日志")
     parser.add_argument("--memory-log-interval", type=float, default=5.0, help="运行时内存日志间隔秒数 (默认 5)")
     parser.add_argument("--context-recycle", type=int, default=10, help="每 N 个页面重建 context (默认 10)")
-    parser.add_argument("--timeout", type=int, default=30000, help="页面加载超时 (毫秒，默认 30000)")
+    parser.add_argument("--timeout", type=int, default=60000, help="页面加载超时 (毫秒，默认 60000)")
+    parser.add_argument(
+        "--wait-until",
+        choices=["commit", "domcontentloaded", "load", "networkidle"],
+        default="commit",
+        help="page.goto 等待条件 (默认 commit，适合低内存 VPS)",
+    )
 
     return parser.parse_args()
 
@@ -677,6 +718,7 @@ def main():
                 block_fonts=not args.no_block_fonts,
                 block_media=not args.no_block_media,
                 timeout=args.timeout,
+                wait_until=args.wait_until,
             )
             logger.info("结果: %s", result)
             log_memory_snapshot("after-page")
@@ -689,6 +731,7 @@ def main():
                 block_media=not args.no_block_media,
                 context_recycle_interval=args.context_recycle,
                 timeout=args.timeout,
+                wait_until=args.wait_until,
             )
             logger.info("完成 %d/%d 个页面", sum(1 for r in results if r["status"] == "ok"), len(results))
             log_memory_snapshot("after-batch")
